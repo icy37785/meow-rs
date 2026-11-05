@@ -10,6 +10,10 @@ the canonical, in-repo source a release is cut from.
 
 ### Added
 
+- **Fork extension: plaintext Trojan**: `skip-tls: true` skips TLS for TCP
+  transport nodes, including relay and `dialer-proxy` chains. TLS remains the
+  default. See [fork differences](docs/fork-differences.md) for security
+  boundaries, configuration, and maintenance notes.
 - **DNS over QUIC (`quic://`)**: RFC 9250 on `quiche` (the vendored BoringSSL
   the rest of the process uses): one bidirectional stream per query, the
   two-octet length prefix, the transaction ID zeroed on the wire and restored

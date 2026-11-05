@@ -107,6 +107,79 @@ async fn read_socks5_addr<R: AsyncReadExt + Unpin>(reader: &mut R) -> SocketAddr
     }
 }
 
+/// Serve one accepted Trojan connection: read the request header and relay.
+///
+/// Generic over the transport so the same mock backs both the TLS server and
+/// the plaintext (`skip-tls`) one — the only difference is whether the stream
+/// is TLS-wrapped before the Trojan header.
+async fn serve_mock_trojan_conn<S>(mut stream: S, expected_hex: String)
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+{
+    // Read Trojan header: 56-byte hex password
+    let mut password_buf = [0u8; 56];
+    stream.read_exact(&mut password_buf).await.unwrap();
+    let received_hex = String::from_utf8_lossy(&password_buf);
+    assert_eq!(received_hex.as_ref(), expected_hex.as_str());
+
+    // CRLF
+    let mut crlf = [0u8; 2];
+    stream.read_exact(&mut crlf).await.unwrap();
+    assert_eq!(&crlf, b"\r\n");
+
+    // CMD
+    let mut cmd = [0u8; 1];
+    stream.read_exact(&mut cmd).await.unwrap();
+
+    // Target address
+    let target_addr = read_socks5_addr(&mut stream).await;
+
+    // Trailing CRLF
+    let mut crlf2 = [0u8; 2];
+    stream.read_exact(&mut crlf2).await.unwrap();
+    assert_eq!(&crlf2, b"\r\n");
+
+    match cmd[0] {
+        0x01 => {
+            // TCP relay
+            let mut target = TcpStream::connect(target_addr).await.unwrap();
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut target).await;
+        }
+        0x03 => {
+            // UDP_ASSOCIATE: pump per-packet frames in both directions over
+            // the stream.  `target_addr` from the request header is
+            // informational; each datagram names its own destination.
+            run_mock_udp_associate(stream).await;
+        }
+        other => {
+            eprintln!("mock trojan: unsupported cmd: {other}");
+        }
+    }
+}
+
+/// Start a mock **plaintext** Trojan server (no TLS) — the shape Leaf's
+/// `[shadowsocks, trojan]` chain produces, where the outer Shadowsocks tunnel
+/// carries an unencrypted Trojan stream.
+async fn start_mock_plaintext_trojan_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let expected_hex = trojan_hex_password(TROJAN_PASSWORD);
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else {
+                break;
+            };
+            let expected_hex = expected_hex.clone();
+            tokio::spawn(async move {
+                serve_mock_trojan_conn(tcp, expected_hex).await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
 /// Start a mock Trojan server with self-signed TLS.
 ///
 /// Handles CMD=0x01 (TCP CONNECT) by relaying to the target address.
@@ -131,51 +204,11 @@ async fn start_mock_trojan_server(
             let acceptor = acceptor.clone();
             let expected_hex = expected_hex.clone();
             tokio::spawn(async move {
-                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                let Ok(tls) = acceptor.accept(tcp).await else {
                     eprintln!("mock trojan: TLS accept error");
                     return;
                 };
-
-                // Read Trojan header: 56-byte hex password
-                let mut password_buf = [0u8; 56];
-                tls.read_exact(&mut password_buf).await.unwrap();
-                let received_hex = String::from_utf8_lossy(&password_buf);
-                assert_eq!(received_hex.as_ref(), expected_hex.as_str());
-
-                // CRLF
-                let mut crlf = [0u8; 2];
-                tls.read_exact(&mut crlf).await.unwrap();
-                assert_eq!(&crlf, b"\r\n");
-
-                // CMD
-                let mut cmd = [0u8; 1];
-                tls.read_exact(&mut cmd).await.unwrap();
-
-                // Target address
-                let target_addr = read_socks5_addr(&mut tls).await;
-
-                // Trailing CRLF
-                let mut crlf2 = [0u8; 2];
-                tls.read_exact(&mut crlf2).await.unwrap();
-                assert_eq!(&crlf2, b"\r\n");
-
-                match cmd[0] {
-                    0x01 => {
-                        // TCP relay
-                        let mut target = TcpStream::connect(target_addr).await.unwrap();
-                        let _ = tokio::io::copy_bidirectional(&mut tls, &mut target).await;
-                    }
-                    0x03 => {
-                        // UDP_ASSOCIATE: pump per-packet frames in both
-                        // directions over the TLS stream.  `target_addr` from
-                        // the request header is informational; each datagram
-                        // names its own destination.
-                        run_mock_udp_associate(tls).await;
-                    }
-                    other => {
-                        eprintln!("mock trojan: unsupported cmd: {other}");
-                    }
-                }
+                serve_mock_trojan_conn(tls, expected_hex).await;
             });
         }
     });
@@ -628,4 +661,205 @@ async fn test_trojan_connect_over_runs_tls_and_handshake() {
     let mut buf = vec![0u8; payload.len()];
     conn.read_exact(&mut buf).await.expect("read_exact failed");
     assert_eq!(&buf, payload, "echo mismatch through connect_over");
+}
+
+// ---------------------------------------------------------------------------
+// Plaintext Trojan (`skip-tls: true`) — Leaf `[shadowsocks, trojan]` chains.
+//
+// In that chain the outer Shadowsocks tunnel carries the stream, so the inner
+// Trojan actor speaks the protocol with no TLS handshake. Before `skip-tls`
+// existed the adapter always wrapped the connection in TLS, which fails
+// against a plaintext Trojan server (the server never answers a ClientHello).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_trojan_plaintext_tcp_connect() {
+    timeout(TIMEOUT, async {
+        let (echo_addr, _echo_handle) = start_tcp_echo_server().await;
+        let (trojan_addr, _trojan_handle) = start_mock_plaintext_trojan_server().await;
+
+        let adapter = TrojanAdapter::new_plaintext(
+            "test-trojan-plaintext",
+            "127.0.0.1",
+            trojan_addr.port(),
+            TROJAN_PASSWORD,
+            false,
+            std::sync::Arc::new(meow_proxy::dialer::DirectDialer),
+        );
+        let metadata = Metadata {
+            network: Network::Tcp,
+            dst_ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            dst_port: echo_addr.port(),
+            ..Default::default()
+        };
+
+        let mut conn = timeout(TIMEOUT, adapter.dial_tcp(&metadata))
+            .await
+            .expect("plaintext TCP dial timed out")
+            .expect("plaintext TCP dial failed");
+
+        let payload = b"hello plaintext trojan";
+        conn.write_all(payload).await.expect("write failed");
+        conn.flush().await.expect("flush failed");
+
+        let mut buf = vec![0u8; payload.len()];
+        conn.read_exact(&mut buf).await.expect("read failed");
+        assert_eq!(&buf, payload, "plaintext echo mismatch");
+    })
+    .await
+    .expect("plaintext TCP round-trip timed out");
+}
+
+/// The reverse check: a TLS-backed adapter pointed at the plaintext server must
+/// fail, which is exactly the pre-`skip-tls` behaviour that broke Leaf chains.
+#[tokio::test]
+async fn test_trojan_tls_against_plaintext_server_fails() {
+    install_crypto_provider();
+
+    let (echo_addr, _echo_handle) = start_tcp_echo_server().await;
+    let (trojan_addr, _trojan_handle) = start_mock_plaintext_trojan_server().await;
+
+    let adapter = TrojanAdapter::new(
+        "test-trojan-tls-vs-plain",
+        "127.0.0.1",
+        trojan_addr.port(),
+        TROJAN_PASSWORD,
+        "localhost",
+        true,
+        false,
+        std::sync::Arc::new(meow_proxy::dialer::DirectDialer),
+    );
+
+    let metadata = Metadata {
+        network: Network::Tcp,
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        dst_port: echo_addr.port(),
+        ..Default::default()
+    };
+
+    let result = timeout(TIMEOUT, adapter.dial_tcp(&metadata)).await;
+    match result {
+        Ok(Err(_)) => {}
+        Ok(Ok(_)) => panic!("TLS handshake against a plaintext server must fail"),
+        Err(_) => panic!("TLS dial against plaintext server hung instead of failing"),
+    }
+}
+
+/// A relay supplies the connection to the Trojan server. No new dial or TLS
+/// handshake may replace that stream.
+#[tokio::test]
+async fn test_trojan_plaintext_connect_over() {
+    timeout(TIMEOUT, async {
+        let (echo_addr, _echo) = start_tcp_echo_server().await;
+        let (trojan_addr, _trojan) = start_mock_plaintext_trojan_server().await;
+        let adapter = TrojanAdapter::new_plaintext(
+            "plaintext-relay",
+            "unused.invalid",
+            1,
+            TROJAN_PASSWORD,
+            false,
+            Arc::new(meow_proxy::dialer::DirectDialer),
+        );
+        let upstream = TcpStream::connect(trojan_addr).await.unwrap();
+        let metadata = Metadata {
+            dst_ip: Some(echo_addr.ip()),
+            dst_port: echo_addr.port(),
+            ..Default::default()
+        };
+        let mut conn = adapter
+            .connect_over(Box::new(upstream), &metadata)
+            .await
+            .unwrap();
+        let payload = b"plaintext over supplied stream";
+        conn.write_all(payload).await.unwrap();
+        conn.flush().await.unwrap();
+        let mut response = vec![0; payload.len()];
+        conn.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, payload);
+    })
+    .await
+    .expect("plaintext connect_over round-trip timed out");
+}
+
+#[tokio::test]
+async fn test_trojan_plaintext_udp_multi_destination() {
+    timeout(TIMEOUT, async {
+        let (echo_a, _a) = start_udp_echo_server().await;
+        let (echo_b, _b) = start_udp_echo_server().await;
+        let (trojan_addr, _trojan) = start_mock_plaintext_trojan_server().await;
+        let adapter = TrojanAdapter::new_plaintext(
+            "plaintext-udp",
+            "127.0.0.1",
+            trojan_addr.port(),
+            TROJAN_PASSWORD,
+            true,
+            Arc::new(meow_proxy::dialer::DirectDialer),
+        );
+        let metadata = Metadata {
+            network: Network::Udp,
+            dst_ip: Some(echo_a.ip()),
+            dst_port: echo_a.port(),
+            ..Default::default()
+        };
+        let conn = adapter.dial_udp(&metadata).await.unwrap();
+        for destination in [echo_a, echo_b, echo_a] {
+            let payload = b"plaintext UDP";
+            assert_eq!(
+                conn.write_packet(payload, &destination).await.unwrap(),
+                payload.len()
+            );
+            let mut response = [0; 64];
+            let (len, from) = conn.read_packet(&mut response).await.unwrap();
+            assert_eq!(&response[..len], payload);
+            assert_eq!(from.port(), destination.port());
+        }
+    })
+    .await
+    .expect("plaintext UDP round-trip timed out");
+}
+
+#[cfg(feature = "mux")]
+#[tokio::test]
+async fn test_trojan_plaintext_mux_handshake() {
+    use meow_proxy::mux::{MuxOptions, MUX_DESTINATION_FQDN, MUX_DESTINATION_PORT};
+
+    timeout(TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut expected = trojan_hex_password(TROJAN_PASSWORD).into_bytes();
+            expected.extend_from_slice(b"\r\n\x01\x03");
+            expected.push(u8::try_from(MUX_DESTINATION_FQDN.len()).unwrap());
+            expected.extend_from_slice(MUX_DESTINATION_FQDN.as_bytes());
+            expected.extend_from_slice(&MUX_DESTINATION_PORT.to_be_bytes());
+            expected.extend_from_slice(b"\r\n\x00\x02"); // sing-mux v0, h2mux
+            expected.extend_from_slice(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+            let mut received = vec![0; expected.len()];
+            stream.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, expected);
+            // Keep the connection alive until the client has opened its stream.
+            done_rx.await.unwrap();
+        });
+        let adapter = TrojanAdapter::new_plaintext(
+            "plaintext-mux",
+            "127.0.0.1",
+            port,
+            TROJAN_PASSWORD,
+            false,
+            Arc::new(meow_proxy::dialer::DirectDialer),
+        )
+        .with_mux(MuxOptions::default());
+        let metadata = Metadata {
+            dst_ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            dst_port: 80,
+            ..Default::default()
+        };
+        let _conn = adapter.dial_tcp(&metadata).await.unwrap();
+        done_tx.send(()).unwrap();
+        server.await.unwrap();
+    })
+    .await
+    .expect("plaintext mux handshake timed out");
 }

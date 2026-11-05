@@ -435,22 +435,48 @@ pub fn parse_proxy_with_dialer(
                 .get("skip-cert-verify")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            // Fork extension: plaintext Trojan for an existing encrypted chain.
+            // Reject malformed opt-ins rather than silently selecting another mode.
+            let skip_tls = match config.get("skip-tls") {
+                None => false,
+                Some(value) => value
+                    .as_bool()
+                    .ok_or_else(|| format!("{name}: trojan 'skip-tls' must be a boolean"))?,
+            };
+            if skip_tls {
+                let network = match config.get("network") {
+                    None => "",
+                    Some(value) => value
+                        .as_str()
+                        .ok_or_else(|| format!("{name}: trojan 'network' must be a string"))?,
+                };
+                if !network.is_empty() && !network.eq_ignore_ascii_case("tcp") {
+                    return Err(format!(
+                        "{name}: trojan 'skip-tls' is only supported on the default \
+                         tcp network, got network '{network}'"
+                    ));
+                }
+            }
             let udp = config
                 .get("udp")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
 
             #[cfg_attr(not(feature = "mux"), allow(unused_mut))]
-            let mut adapter = TrojanAdapter::new(
-                name,
-                server,
-                port,
-                password,
-                sni,
-                skip_verify,
-                udp,
-                Arc::clone(dialer),
-            );
+            let mut adapter = if skip_tls {
+                TrojanAdapter::new_plaintext(name, server, port, password, udp, Arc::clone(dialer))
+            } else {
+                TrojanAdapter::new(
+                    name,
+                    server,
+                    port,
+                    password,
+                    sni,
+                    skip_verify,
+                    udp,
+                    Arc::clone(dialer),
+                )
+            };
             #[cfg(feature = "mux")]
             if let Some(mux_options) = parse_mux_options(name, config)? {
                 // muxcool rides VLESS CommandMux; trojan has no equivalent
@@ -5590,6 +5616,119 @@ tls: true
             err.contains("group 'US'") && err.contains("filter regex error"),
             "unexpected error: {err}"
         );
+    }
+
+    // ─── trojan proxy parser ─────────────────────────────────────────────────
+
+    #[cfg(feature = "trojan")]
+    #[test]
+    fn parse_trojan_skip_tls_ok() {
+        let cfg = proxy_config(
+            "name: leaf-chain\ntype: trojan\nserver: 127.0.0.1\nport: 18443\n\
+             password: p\nskip-tls: true\nudp: true\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "trojan")]
+    #[test]
+    fn parse_trojan_skip_tls_tcp_network_ok() {
+        let cfg = proxy_config(
+            "name: t\ntype: trojan\nserver: 1.2.3.4\nport: 443\npassword: p\n\
+             skip-tls: true\nnetwork: tcp\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "trojan")]
+    #[test]
+    fn parse_trojan_skip_tls_rejects_non_tcp_network() {
+        let cfg = proxy_config(
+            "name: t\ntype: trojan\nserver: 1.2.3.4\nport: 443\npassword: p\n\
+             skip-tls: true\nnetwork: ws\n",
+        );
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("skip-tls on a non-tcp network must error");
+        };
+        assert!(err.contains("skip-tls"), "msg: {err}");
+        assert!(err.contains("ws"), "msg: {err}");
+    }
+
+    #[cfg(feature = "trojan")]
+    #[test]
+    fn parse_trojan_skip_tls_validates_options() {
+        for option in ["skip-tls: 'true'", "skip-tls: 1", "skip-tls: null"] {
+            let cfg = proxy_config(&format!(
+                "name: t\ntype: trojan\nserver: 127.0.0.1\nport: 443\npassword: p\n{option}\n"
+            ));
+            let Err(err) = parse_proxy(&cfg) else {
+                panic!("invalid opt-in must fail: {option}");
+            };
+            assert!(err.contains("skip-tls") && err.contains("boolean"), "{err}");
+        }
+        for network in ["ws", "grpc", "h2", "123", "null"] {
+            let cfg = proxy_config(&format!(
+                "name: t\ntype: trojan\nserver: 127.0.0.1\nport: 443\npassword: p\n\
+                 skip-tls: true\nnetwork: {network}\n"
+            ));
+            assert!(parse_proxy(&cfg).is_err(), "network: {network}");
+        }
+        for options in [
+            "",
+            "skip-tls: false",
+            "skip-tls: true\nnetwork: ''",
+            "skip-tls: true\nnetwork: TCP",
+        ] {
+            let cfg = proxy_config(&format!(
+                "name: t\ntype: trojan\nserver: 127.0.0.1\nport: 443\npassword: p\n{options}\n"
+            ));
+            assert!(parse_proxy(&cfg).is_ok(), "{options}");
+        }
+    }
+
+    #[cfg(feature = "trojan")]
+    #[tokio::test]
+    async fn parse_trojan_skip_tls_sends_plaintext_header() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::time::{timeout, Duration};
+
+        timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                // SHA-224("p"), CONNECT, IPv4 127.0.0.1:80, then payload.
+                let expected = concat!(
+                    "e22bd066f428b7a77a1b936f99c1f4c117b856705d8f90379579f1e9",
+                    "\r\n\x01\x01\x7f\x00\x00\x01\x00\x50\r\nping",
+                )
+                .as_bytes();
+                let mut received = vec![0; expected.len()];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(received.as_slice(), expected);
+                stream.write_all(b"pong").await.unwrap();
+            });
+            let cfg = proxy_config(&format!(
+                "name: plaintext\ntype: trojan\nserver: 127.0.0.1\nport: {port}\n\
+                 password: p\nskip-tls: true\n"
+            ));
+            let proxy = parse_proxy(&cfg).unwrap();
+            let metadata = Metadata {
+                dst_ip: Some("127.0.0.1".parse().unwrap()),
+                dst_port: 80,
+                ..Default::default()
+            };
+            let mut conn = proxy.dial_tcp(&metadata).await.unwrap();
+            conn.write_all(b"ping").await.unwrap();
+            conn.flush().await.unwrap();
+            let mut response = [0; 4];
+            conn.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"pong");
+            server.await.unwrap();
+        })
+        .await
+        .expect("parsed plaintext Trojan round-trip timed out");
     }
 
     // ─── snell proxy parser ───────────────────────────────────────────────────
