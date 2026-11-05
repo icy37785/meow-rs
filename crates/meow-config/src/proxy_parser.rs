@@ -35,6 +35,7 @@ fn required_port(
 /// Wraps a ProxyAdapter to implement the full Proxy trait
 pub struct WrappedProxy {
     adapter: Box<dyn ProxyAdapter>,
+    hidden: bool,
     /// The `dialer-proxy` the adapter dials its server through.
     hop: Option<DialerHop>,
 }
@@ -49,7 +50,16 @@ struct DialerHop {
 
 impl WrappedProxy {
     pub fn new(adapter: Box<dyn ProxyAdapter>) -> Self {
-        Self { adapter, hop: None }
+        Self {
+            adapter,
+            hidden: false,
+            hop: None,
+        }
+    }
+
+    pub(crate) fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
     }
 
     /// `self`, whose adapter the block `config` built with `dialer`
@@ -139,6 +149,9 @@ impl ProxyAdapter for WrappedProxy {
 }
 
 impl Proxy for WrappedProxy {
+    fn hidden(&self) -> bool {
+        self.hidden
+    }
     fn alive(&self) -> bool {
         self.adapter.health().alive()
     }
@@ -153,6 +166,15 @@ impl Proxy for WrappedProxy {
     }
     fn delay_history(&self) -> Vec<DelayHistory> {
         self.adapter.health().delay_history()
+    }
+}
+
+fn node_hidden(config: &HashMap<String, serde_json::Value>) -> std::result::Result<bool, String> {
+    match config.get("hidden") {
+        None => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| "proxy 'hidden' must be a boolean".to_string()),
     }
 }
 
@@ -180,8 +202,11 @@ pub(crate) fn parse_static_proxy(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or("missing proxy name")?;
+            let hidden = node_hidden(config)?;
             let adapter = parse_direct(name, config, ipv6, Some(slot))?;
-            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+            Ok(Arc::new(
+                WrappedProxy::new(Box::new(adapter)).with_hidden(hidden),
+            ))
         }
         _ => parse_proxy(config, ipv6),
     }
@@ -314,6 +339,7 @@ pub fn parse_proxy_with_dialer(
     dialer: &std::sync::Arc<dyn meow_proxy::dialer::TcpDialer>,
     ipv6: bool,
 ) -> std::result::Result<Arc<dyn Proxy>, String> {
+    let hidden = node_hidden(config)?;
     let name = config
         .get("name")
         .and_then(|v| v.as_str())
@@ -323,7 +349,7 @@ pub fn parse_proxy_with_dialer(
         .and_then(|v| v.as_str())
         .ok_or("missing proxy type")?;
 
-    match proxy_type {
+    let proxy = match proxy_type {
         #[cfg(feature = "trusttunnel")]
         "trusttunnel" => parse_trusttunnel(name, config, dialer),
         #[cfg(feature = "ss")]
@@ -415,9 +441,7 @@ pub fn parse_proxy_with_dialer(
             }
             #[cfg(not(feature = "mux"))]
             parse_mux_options(name, config)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         #[cfg(feature = "trojan")]
         "trojan" => {
@@ -492,59 +516,47 @@ pub fn parse_proxy_with_dialer(
             }
             #[cfg(not(feature = "mux"))]
             parse_mux_options(name, config)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         #[cfg(feature = "vless")]
         "vless" => {
             let adapter = parse_vless(name, config, dialer)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         "http" => {
             let adapter = parse_http(name, config, dialer)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         "socks5" => {
             let adapter = parse_socks5(name, config, dialer)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         "direct" => {
             reject_unthreaded_dialer(name, "direct", dialer)?;
             let adapter = parse_direct(name, config, ipv6, None)?;
-            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+            Ok(WrappedProxy::new(Box::new(adapter)))
         }
         #[cfg(feature = "anytls")]
         "anytls" => {
             reject_unthreaded_dialer(name, "anytls", dialer)?;
             let adapter = parse_anytls(name, config)?;
-            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+            Ok(WrappedProxy::new(Box::new(adapter)))
         }
         #[cfg(feature = "hysteria2")]
         "hysteria2" => {
             reject_unthreaded_dialer(name, "hysteria2", dialer)?;
             let adapter = parse_hysteria2(name, config)?;
-            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+            Ok(WrappedProxy::new(Box::new(adapter)))
         }
         #[cfg(feature = "vmess")]
         "vmess" => {
             let adapter = parse_vmess(name, config, dialer)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         #[cfg(feature = "snell")]
         "snell" => {
             let adapter = parse_snell(name, config, dialer)?;
-            Ok(Arc::new(
-                WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-            ))
+            Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
         }
         #[cfg(not(feature = "trusttunnel"))]
         "trusttunnel" => Err(feature_gated_proxy_type("trusttunnel")),
@@ -576,7 +588,8 @@ pub fn parse_proxy_with_dialer(
             ))
         }
         _ => Err(format!("unsupported proxy type: {proxy_type}")),
-    }
+    }?;
+    Ok(Arc::new(proxy.with_hidden(hidden)))
 }
 
 /// Whether `plugin` names a SIP003 plugin that runs as an external subprocess
@@ -1064,7 +1077,7 @@ fn parse_trusttunnel(
     name: &str,
     config: &HashMap<String, serde_json::Value>,
     dialer: &Arc<dyn meow_proxy::dialer::TcpDialer>,
-) -> std::result::Result<Arc<dyn Proxy>, String> {
+) -> std::result::Result<WrappedProxy, String> {
     let required = |key: &str| {
         config
             .get(key)
@@ -1273,9 +1286,7 @@ fn parse_trusttunnel(
         Arc::clone(dialer),
     )
     .map_err(|error| error.to_string())?;
-    Ok(Arc::new(
-        WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer),
-    ))
+    Ok(WrappedProxy::new(Box::new(adapter)).dialing_through(config, dialer))
 }
 
 /// Parse a `type: anytls` proxy block into an [`AnytlsAdapter`].
@@ -3343,7 +3354,7 @@ fn parse_proxy_group_inner(
     // Match mihomo: include only top-level `proxies:` entries, not built-ins
     // or proxy groups that happen to have entered the registry already.
     if config.include_all_proxies.unwrap_or(false) {
-        for p in include_all_proxies {
+        for p in include_all_proxies.iter().filter(|p| !p.hidden()) {
             proxies.push(Arc::clone(p));
         }
     }
@@ -3372,11 +3383,12 @@ fn parse_proxy_group_inner(
     // provider-sourced members only, mirroring mihomo (static `proxies:`
     // members bypass it — upstream never filters compatible providers).
     let group_filter = crate::proxy_provider::GroupFilter::from_raw_group(config)
-        .map_err(|e| format!("group '{}': {e}", config.name))?;
-    let provider_slot = |p: &Arc<crate::proxy_provider::ProxyProvider>| match &group_filter {
-        Some(f) => p.derived_slot(f),
-        None => Arc::clone(&p.slot),
-    };
+        .map_err(|e| format!("group '{}': {e}", config.name))?
+        .unwrap_or_default();
+    // Always use a visible view: the provider's full slot must keep hidden
+    // dependencies available to dialer-proxy resolution across refreshes.
+    let provider_slot =
+        |p: &Arc<crate::proxy_provider::ProxyProvider>| p.derived_slot(&group_filter);
 
     // Collect provider slots: include_all wires every provider; use: wires
     // specific ones. include-all iterates the map sorted by provider name so
@@ -5616,6 +5628,29 @@ tls: true
             err.contains("group 'US'") && err.contains("filter regex error"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn parse_leaf_hidden_metadata() {
+        for (flag, expected) in [
+            ("", false),
+            ("hidden: false", false),
+            ("hidden: true", true),
+        ] {
+            let cfg = proxy_config(&format!(
+                "name: helper\ntype: http\nserver: 127.0.0.1\nport: 1\n{flag}\n"
+            ));
+            assert_eq!(parse_proxy(&cfg).unwrap().hidden(), expected);
+        }
+        for flag in ["'true'", "null", "1"] {
+            let cfg = proxy_config(&format!(
+                "name: helper\ntype: http\nserver: 127.0.0.1\nport: 1\nhidden: {flag}\n"
+            ));
+            let Err(err) = parse_proxy(&cfg) else {
+                panic!("invalid hidden must fail");
+            };
+            assert!(err.contains("hidden") && err.contains("boolean"), "{err}");
+        }
     }
 
     // ─── trojan proxy parser ─────────────────────────────────────────────────

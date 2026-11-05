@@ -644,3 +644,27 @@ rules:
     let stderr = meow.fails(&["chain-health", "nope", "clean"]).await;
     assert!(stderr.contains("no proxy named 'nope'"), "{stderr}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hidden_proxy_is_omitted_from_lists_but_can_be_inspected() {
+    let meow = Meow::start_with(
+        r#"
+proxies:
+  - {name: helper, type: http, server: 127.0.0.1, port: 1, hidden: true}
+  - {name: visible-exit, type: http, server: 127.0.0.1, port: 1}
+rules: ['MATCH,DIRECT']
+"#,
+    )
+    .await;
+    let text = meow.run(&["proxy", "list"]).await;
+    assert!(text.contains("visible-exit"), "{text}");
+    assert!(!text.contains("helper"), "{text}");
+    let list = json(&meow.run(&["--json", "proxy", "list"]).await);
+    assert!(!list
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["name"] == "helper"));
+    let named = json(&meow.run(&["--json", "proxy", "show", "helper"]).await);
+    assert_eq!(named["hidden"], true);
+}

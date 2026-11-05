@@ -165,7 +165,7 @@ pub fn probe_stream_bounded(
 ) -> impl Stream<Item = NamedProbeResult> + Send + 'static {
     let url = Arc::<str>::from(url.to_owned());
     let expected = expected.map(|s| Arc::<str>::from(s.to_owned()));
-    futures::stream::iter(probes)
+    futures::stream::iter(probes.into_iter().filter(|(_, proxy)| !proxy.hidden()))
         .map(move |(name, proxy)| {
             named_probe_future(name, proxy, Arc::clone(&url), expected.clone(), timeout)
         })
@@ -497,6 +497,7 @@ pub async fn sweep_members(
 ) -> Vec<SweptMember> {
     let sweeps: Vec<_> = members
         .into_iter()
+        .filter(|(_, proxy)| !proxy.hidden())
         .map(|(name, proxy)| sweep_member(name, proxy, fronts, url, expected, timeout, hold))
         .collect();
     futures::stream::iter(sweeps)

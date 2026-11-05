@@ -170,6 +170,9 @@ impl ProxyAdapter for DialerProxyAdapter {
 }
 
 impl Proxy for DialerProxyAdapter {
+    fn hidden(&self) -> bool {
+        self.inner.hidden()
+    }
     fn alive(&self) -> bool {
         self.inner.alive()
     }

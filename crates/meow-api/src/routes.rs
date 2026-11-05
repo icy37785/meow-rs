@@ -368,7 +368,7 @@ struct ProxyInfo {
     /// through `/providers/proxies/{provider}/{name}/healthcheck`.
     #[serde(rename = "provider-name")]
     provider_name: String,
-    /// Group-only: the group's `hidden:` key.
+    /// Group display key, or `true` for a hidden dependency leaf.
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden: Option<bool>,
     /// Group-only: the group's `icon:` key, `""` when unset.
@@ -410,7 +410,10 @@ impl ProxyInfo {
             expected_status: proxy.expected_status().map(str::to_string),
             delay,
             provider_name: provider.to_string(),
-            hidden: display.as_ref().map(|d| d.hidden),
+            hidden: display
+                .as_ref()
+                .map(|d| d.hidden)
+                .or_else(|| proxy.hidden().then_some(true)),
             icon: display.map(|d| d.icon.into_string()),
         }
     }

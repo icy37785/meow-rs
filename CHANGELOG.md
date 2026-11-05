@@ -10,6 +10,10 @@ the canonical, in-repo source a release is cut from.
 
 ### Added
 
+- **Hidden dependency nodes**: node-level `hidden: true` keeps a proxy
+  available for explicit/chained dials while excluding it from automatic
+  group membership, CLI proxy lists, scheduled health checks and bulk
+  probes. Management responses preserve its hidden flag.
 - **Provider-local proxy chains**: provider nodes can resolve `dialer-proxy`
   against siblings in the same provider. Global proxies/groups retain
   precedence; sibling names remain isolated and track successful refreshes.

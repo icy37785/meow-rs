@@ -268,6 +268,12 @@ pub trait ProxySelection: Send + Sync {
 }
 
 pub trait Proxy: ProxyAdapter {
+    /// A dependency-only leaf: omit from automatic membership and bulk
+    /// probes while keeping explicit routing and chained dials available.
+    /// This is separate from a group's GUI-only `GroupDisplay::hidden`.
+    fn hidden(&self) -> bool {
+        false
+    }
     fn alive(&self) -> bool;
     fn alive_for_url(&self, url: &str) -> bool;
     fn last_delay(&self) -> u16;

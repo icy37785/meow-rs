@@ -1987,7 +1987,7 @@ fn is_usable_global_target(name: &str, proxies: &HashMap<SmolStr, Arc<dyn Proxy>
     !BUILTIN_GLOBAL_POLICIES
         .iter()
         .any(|policy| name.eq_ignore_ascii_case(policy))
-        && proxies.contains_key(name)
+        && proxies.get(name).is_some_and(|proxy| !proxy.hidden())
 }
 
 /// The target of the LAST top-level `MATCH,<target>` rule — the config's
@@ -2075,10 +2075,14 @@ pub(crate) fn unavailable_placeholder(
     name: &str,
     reason: &str,
     declared: meow_common::AdapterType,
+    hidden: bool,
 ) -> Arc<dyn Proxy> {
-    Arc::new(proxy_parser::WrappedProxy::new(Box::new(
-        meow_proxy::UnavailableAdapter::new(name, reason, declared),
-    )))
+    Arc::new(
+        proxy_parser::WrappedProxy::new(Box::new(meow_proxy::UnavailableAdapter::new(
+            name, reason, declared,
+        )))
+        .with_hidden(hidden),
+    )
 }
 
 /// Parse every `proxies:` leaf entry into `proxies`, keyed by its YAML `name:`
@@ -2132,7 +2136,18 @@ fn insert_parsed_leaves(
                             "proxies: '{name}' failed to parse ({e}); keeping the name bound \
                          to an unavailable node so no dial can fall back past it"
                         );
-                        (unavailable_placeholder(name, &e, declared), true)
+                        (
+                            unavailable_placeholder(
+                                name,
+                                &e,
+                                declared,
+                                raw_proxy
+                                    .get("hidden")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false),
+                            ),
+                            true,
+                        )
                     } else {
                         warn!("Failed to parse proxy: {}", e);
                         continue;
@@ -2668,13 +2683,14 @@ fn build_proxy_layer(
             // default selection), and the Pass/PassRule types are filtered
             // as match-loop signals (config.go ~line 967).
             .filter(|(_, p)| {
-                !matches!(
-                    p.adapter_type(),
-                    AdapterType::Pass
-                        | AdapterType::PassRule
-                        | AdapterType::Compatible
-                        | AdapterType::RejectDrop
-                )
+                !p.hidden()
+                    && !matches!(
+                        p.adapter_type(),
+                        AdapterType::Pass
+                            | AdapterType::PassRule
+                            | AdapterType::Compatible
+                            | AdapterType::RejectDrop
+                    )
             })
             .map(|(name, _)| name.to_string())
             .collect();

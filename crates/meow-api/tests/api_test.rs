@@ -8234,3 +8234,67 @@ async fn put_configs_strict_remote_payload_defect_commits_empty() {
     .await
     .expect("the committed provider must retry the bad payload in background");
 }
+
+#[tokio::test]
+async fn hidden_nodes_keep_named_access_but_leave_automatic_membership() {
+    let raw: RawConfig = serde_saphyr::from_str(
+        r#"
+proxies:
+  - {name: dependency, type: http, server: 127.0.0.1, port: 1, hidden: true}
+  - {name: exit, type: http, server: 127.0.0.1, port: 1}
+proxy-groups:
+  - {name: Automatic, type: select, include-all-proxies: true}
+rules: ['MATCH,DIRECT']
+"#,
+    )
+    .unwrap();
+    let state = test_state(raw);
+    let (status, all) = get_json(&state, "/proxies").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["proxies"]["dependency"]["hidden"], true);
+    assert_eq!(
+        all["proxies"]["Automatic"]["all"],
+        serde_json::json!(["exit"])
+    );
+    assert!(!all["proxies"]["GLOBAL"]["all"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n == "dependency"));
+    let (status, named) = get_json(&state, "/proxies/dependency").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(named["hidden"], true);
+
+    let dependency = Arc::clone(&state.tunnel.route_snapshot().proxies["dependency"]);
+    let probes = vec![("dependency".to_string(), Arc::clone(&dependency))];
+    let results = meow_proxy::health::probe_many_bounded(
+        probes.clone(),
+        "http://127.0.0.1:1/",
+        None,
+        std::time::Duration::from_millis(100),
+        1,
+    )
+    .await;
+    assert!(
+        results.is_empty(),
+        "hidden nodes must not enter bulk probes"
+    );
+    let results = meow_proxy::health::sweep_members(
+        probes,
+        &[],
+        "http://127.0.0.1:1/",
+        None,
+        std::time::Duration::from_millis(100),
+        1,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        results.is_empty(),
+        "hidden nodes must not enter scheduled sweeps"
+    );
+    assert!(
+        dependency.delay_history().is_empty(),
+        "skipping must not record a failure"
+    );
+}

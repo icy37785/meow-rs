@@ -22,6 +22,7 @@ pub struct ProxyInfo {
     pub alive: bool,
     pub history: Vec<Delay>,
     pub udp: bool,
+    pub hidden: bool,
     /// Group-only: its members.
     pub all: Option<Vec<String>>,
     /// Group-only: the member it routes through.
@@ -235,10 +236,11 @@ pub async fn proxy_list(ctx: &Ctx, filter: Option<&str>) -> anyhow::Result<()> {
         entries.push((raw, proxy));
     }
     entries.retain(|(_, proxy)| {
-        format::matches(
-            filter,
-            &[&proxy.name, &proxy.proxy_type, &proxy.provider_name],
-        )
+        !proxy.hidden
+            && format::matches(
+                filter,
+                &[&proxy.name, &proxy.proxy_type, &proxy.provider_name],
+            )
     });
     if ctx.json {
         let list: Vec<Value> = entries.into_iter().map(|(raw, _)| raw).collect();

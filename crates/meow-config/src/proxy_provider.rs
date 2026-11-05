@@ -157,7 +157,7 @@ type WeakSlot = std::sync::Weak<RwLock<Vec<Arc<dyn Proxy>>>>;
 /// apply to the proxies that group pulls from providers (`use:` /
 /// `include-all`), mirroring mihomo. Static `proxies:` members bypass the
 /// filter, also matching upstream (compatible providers are not filtered).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct GroupFilter {
     filter: Option<regex::Regex>,
     exclude_filter: Option<regex::Regex>,
@@ -182,6 +182,9 @@ impl GroupFilter {
     }
 
     fn keep(&self, proxy: &dyn Proxy) -> bool {
+        if proxy.hidden() {
+            return false;
+        }
         let name = proxy.name();
         if let Some(re) = &self.filter {
             if !re.is_match(name) {
@@ -1147,7 +1150,15 @@ impl ProxyProvider {
                             raw_name
                         };
                         warn!(provider = %self.name, proxy = label, error = %e, "keeping an unavailable node so nothing can dial past it");
-                        result.push(crate::unavailable_placeholder(label, &e, declared));
+                        result.push(crate::unavailable_placeholder(
+                            label,
+                            &e,
+                            declared,
+                            raw_map
+                                .get("hidden")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false),
+                        ));
                     } else {
                         warn!(provider = %self.name, proxy = raw_name, error = %e, "failed to parse proxy");
                     }
@@ -2370,12 +2381,13 @@ header:
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("nodes.yaml");
             std::fs::write(&path, format!(
-                "proxies:\n  - {{name: inner, type: http, server: 127.0.0.1, port: 1, dialer-proxy: outer}}\n  - {{name: outer, type: http, server: 127.0.0.1, port: {port}}}\n"
+                "proxies:\n  - {{name: inner, type: http, server: 127.0.0.1, port: 1, dialer-proxy: outer}}\n  - {{name: outer, type: http, server: 127.0.0.1, port: {port}, hidden: true}}\n"
             )).unwrap();
             let registry = ProxyRegistry::default();
             let provider = ProxyProvider::new("test", &raw_file_provider("nodes.yaml"), Some(dir.path()), true, true, registry.clone()).unwrap();
             provider.refresh().await.unwrap();
-            let visible = provider.derived_slot(&group_filter(None, Some("^outer$"), None));
+            let visible = provider.derived_slot(&GroupFilter::default());
+            assert_eq!(provider.proxies().len(), 2, "hidden dependencies remain resolvable");
             assert_eq!(slot_names(&visible), ["inner"]);
             let inner = Arc::clone(&visible.read()[0]);
             let metadata = meow_common::Metadata {
@@ -2449,6 +2461,32 @@ header:
             err.to_string().contains("registry generation dropped"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn hidden_provider_views_follow_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodes.yaml");
+        let provider = ProxyProvider::new(
+            "hidden",
+            &raw_file_provider("nodes.yaml"),
+            Some(dir.path()),
+            true,
+            true,
+            ProxyRegistry::default(),
+        )
+        .unwrap();
+        let visible = provider.derived_slot(&GroupFilter::default());
+        for (flag, expected) in [("true", 0), ("false", 1), ("true", 0)] {
+            std::fs::write(&path, format!("proxies:\n  - {{name: helper, type: http, server: 127.0.0.1, port: 1, hidden: {flag}}}\n")).unwrap();
+            provider.refresh().await.unwrap();
+            assert_eq!(provider.proxies().len(), 1);
+            assert_eq!(visible.read().len(), expected);
+        }
+        std::fs::write(&path, "proxies:\n  - {name: helper, type: http, server: 127.0.0.1, port: 1, hidden: 'true'}\n").unwrap();
+        assert!(provider.refresh().await.is_err());
+        assert!(provider.proxies()[0].hidden());
+        assert!(visible.read().is_empty());
     }
 
     /// Malformed or self-referencing `dialer-proxy` values reject the node

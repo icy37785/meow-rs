@@ -108,3 +108,42 @@ These exercise a forward reference through an actual CONNECT chain,
 group filtering, failed refresh preservation, removal of a referenced
 sibling, provider isolation, global precedence, live slot replacement,
 cycle rejection, and weak ownership.
+
+## Hidden dependency nodes (`hidden: true`)
+
+This fork accepts a boolean `hidden` on leaf proxy nodes, defaulting to
+`false`. This extends the existing group-level `hidden` display option;
+node-level behavior is a fork extension. Names and protocol types have no
+special meaning: `外层-` is not hardcoded, and being referenced by another
+node does not automatically hide a proxy that may also be a usable exit.
+
+A hidden node remains in the full provider slot or global registry. Explicit
+rules, relay members, `dialer-proxy` references and named inspection/probe
+requests still work. Hidden does not mark a node dead or forbid routing.
+It opts a dependency out of ordinary exit discovery and standalone bulk
+probes:
+
+- Provider-backed `use:` / `include-all*` groups use a live visible view.
+- `include-all-proxies` and auto-created GLOBAL exclude hidden leaf nodes.
+- Explicit group `proxies:` lists remain authoritative, including a group
+  deliberately used to select between hidden outer hops.
+- Bulk provider/group probes and scheduled sweeps skip hidden leaf nodes
+  without recording failed delays. Inner-node probes still exercise the
+  full chain through those dependencies.
+- Proxy/provider management responses retain nodes and expose `hidden: true`;
+  visible leaf nodes keep their existing response shape. Dashboards can
+  honor the flag, and the CLI's normal proxy list omits hidden nodes.
+
+The full slot and its filtered views update together on successful refresh;
+changes to `hidden` therefore change group membership without discarding
+chain dependencies. A failed strict refresh preserves the last-good state.
+A group's own `hidden` remains a GUI-only option and does not disable its
+routing or health checks.
+
+Checks:
+
+```sh
+cargo test -p meow-config --lib hidden
+cargo test -p meow-config --lib provider_sibling
+cargo test -p meow-api --test api_test hidden_nodes_keep_named_access
+```
