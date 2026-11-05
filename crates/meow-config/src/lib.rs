@@ -2950,12 +2950,15 @@ fn rebuild_from_raw_impl(
     // built above — so warn about references that will never resolve and let
     // the by-name lookup surface a loud dial error at runtime.
     for provider in candidate_providers.values() {
+        let siblings = provider.proxies();
         for dialer in provider.declared_dialer_names() {
-            if !proxies.contains_key(dialer.as_str()) {
+            if !proxies.contains_key(dialer.as_str())
+                && !siblings.iter().any(|node| node.name() == dialer)
+            {
                 warn!(
                     provider = %provider.name,
                     "provider node declares dialer-proxy '{dialer}', which is \
-                     not a built proxy or group — chained dials will fail"
+                     not a built proxy/group or a node in this provider — chained dials will fail"
                 );
             }
         }

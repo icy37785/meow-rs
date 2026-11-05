@@ -10,6 +10,10 @@ the canonical, in-repo source a release is cut from.
 
 ### Added
 
+- **Provider-local proxy chains**: provider nodes can resolve `dialer-proxy`
+  against siblings in the same provider. Global proxies/groups retain
+  precedence; sibling names remain isolated and track successful refreshes.
+  Missing or removed hops fail closed. See [fork differences](docs/fork-differences.md).
 - **Fork extension: plaintext Trojan**: `skip-tls: true` skips TLS for TCP
   transport nodes, including relay and `dialer-proxy` chains. TLS remains the
   default. See [fork differences](docs/fork-differences.md) for security

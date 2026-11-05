@@ -913,11 +913,16 @@ impl std::fmt::Debug for ProxyRegistry {
     }
 }
 
+type WeakProviderSlot = Weak<RwLock<Vec<Arc<dyn Proxy>>>>;
+
 /// The front hop of a `dialer-proxy` chain, addressed by name.
 #[derive(Clone)]
 pub struct DialerTarget {
     name: SmolStr,
     registry: Weak<RegistryCell>,
+    /// The owning provider's existing slot is the source of truth across
+    /// refreshes. Weak so slot → node → target cannot form an Arc cycle.
+    provider_nodes: WeakProviderSlot,
 }
 
 impl DialerTarget {
@@ -925,7 +930,17 @@ impl DialerTarget {
         Self {
             name: name.into(),
             registry: registry.downgrade(),
+            provider_nodes: Weak::new(),
         }
+    }
+
+    /// Also resolve siblings from this provider's current, unfiltered node
+    /// set. Operator-defined global proxies/groups take precedence; sibling
+    /// names stay private to their provider and follow its atomic slot swap.
+    #[must_use]
+    pub fn with_provider_nodes(mut self, nodes: &meow_common::ProviderSlot) -> Self {
+        self.provider_nodes = Arc::downgrade(nodes);
+        self
     }
 
     /// Registry key of the front proxy, as written in the config.
@@ -933,17 +948,26 @@ impl DialerTarget {
         &self.name
     }
 
-    /// `None` when the registry generation is gone, has not been published
-    /// yet, or no longer holds the name. Callers must fail loudly — falling
-    /// back to a direct dial would leak past a chain the user configured for
-    /// policy reasons.
+    /// `None` when the registry generation is gone or neither the global
+    /// snapshot nor the optional provider slot holds the name. Callers must
+    /// fail loudly — dialing directly would leak past the configured chain.
     pub fn resolve(&self) -> Option<Arc<dyn Proxy>> {
-        self.registry.upgrade().and_then(|cell| {
-            cell.proxies
-                .read()
-                .as_ref()
-                .and_then(|map| map.get(&self.name).cloned())
-        })
+        let cell = self.registry.upgrade()?;
+        let global = cell
+            .proxies
+            .read()
+            .as_ref()
+            .and_then(|map| map.get(&self.name).cloned());
+        if global.is_some() {
+            return global;
+        }
+        let nodes = self.provider_nodes.upgrade()?;
+        let sibling = nodes
+            .read()
+            .iter()
+            .find(|proxy| proxy.name() == self.name)
+            .cloned();
+        sibling
     }
 
     /// Where hops through this target count their bytes: `None` until a
@@ -2215,6 +2239,63 @@ mod tests {
             err.to_string().contains("registry generation dropped"),
             "expected the dead-cell error, got: {err}"
         );
+    }
+
+    #[test]
+    fn provider_targets_are_isolated_and_follow_live_slots() {
+        let registry = ProxyRegistry::default();
+        let front_a: Arc<dyn Proxy> = Arc::new(CapturingProxy {
+            seen: Mutex::new(Vec::new()),
+        });
+        let front_b: Arc<dyn Proxy> = Arc::new(CapturingProxy {
+            seen: Mutex::new(Vec::new()),
+        });
+        let global: Arc<dyn Proxy> = Arc::new(CapturingProxy {
+            seen: Mutex::new(Vec::new()),
+        });
+        let a: meow_common::ProviderSlot = Arc::new(RwLock::new(vec![Arc::clone(&front_a)]));
+        let b: meow_common::ProviderSlot = Arc::new(RwLock::new(vec![Arc::clone(&front_b)]));
+        let target_a = DialerTarget::new("front", &registry).with_provider_nodes(&a);
+        let target_b = DialerTarget::new("front", &registry).with_provider_nodes(&b);
+        assert!(Arc::ptr_eq(&target_a.resolve().unwrap(), &front_a));
+        assert!(Arc::ptr_eq(&target_b.resolve().unwrap(), &front_b));
+        assert!(registry.resolve_name("front").is_none());
+
+        registry.publish(Arc::new(HashMap::from([(
+            "front".into(),
+            Arc::clone(&global),
+        )])));
+        assert!(Arc::ptr_eq(&target_a.resolve().unwrap(), &global));
+        assert!(Arc::ptr_eq(&target_b.resolve().unwrap(), &global));
+        registry.publish(Arc::new(HashMap::new()));
+        assert!(Arc::ptr_eq(&target_a.resolve().unwrap(), &front_a));
+
+        // A retained target follows the slot, not the adapter it first saw.
+        *a.write() = vec![Arc::clone(&front_b)];
+        assert!(Arc::ptr_eq(&target_a.resolve().unwrap(), &front_b));
+        a.write().clear();
+        assert!(target_a.resolve().is_none());
+        assert!(target_b.resolve().is_some());
+        drop(registry);
+        assert!(
+            target_b.resolve().is_none(),
+            "a dead registry generation must fail closed"
+        );
+    }
+
+    #[test]
+    fn provider_target_does_not_keep_its_slot_alive() {
+        let registry = ProxyRegistry::default();
+        let front: Arc<dyn Proxy> = Arc::new(CapturingProxy {
+            seen: Mutex::new(Vec::new()),
+        });
+        let nodes: meow_common::ProviderSlot = Arc::new(RwLock::new(vec![front]));
+        let weak = Arc::downgrade(&nodes);
+        let target = DialerTarget::new("front", &registry).with_provider_nodes(&nodes);
+        assert!(target.resolve().is_some());
+        drop(nodes);
+        assert!(weak.upgrade().is_none());
+        assert!(target.resolve().is_none());
     }
 
     /// A `dialer-proxy` cycle that static analysis cannot see — here a

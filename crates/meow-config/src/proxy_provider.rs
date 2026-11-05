@@ -1182,9 +1182,9 @@ impl ProxyProvider {
     /// The chain binds *late* — a [`meow_proxy::dialer::NamedProxyDialer`]
     /// holds only the name plus this provider's registry handle and resolves
     /// on every dial, so refresh ordering and forward references to groups
-    /// need no special handling here. Targets are top-level `proxies:` /
-    /// `proxy-groups:` entries only — provider-sourced node names are not
-    /// registry entries (mihomo resolves the same restricted namespace).
+    /// need no special handling here. Top-level `proxies:` / `proxy-groups:`
+    /// entries take precedence, followed by siblings from this provider's
+    /// current slot. Siblings are never published into the global namespace.
     ///
     /// Upstream precedence (`provider.go` then `OverrideSchema.Apply`):
     /// `override.dialer-proxy` > provider-level `dialer-proxy` > node-level —
@@ -1260,7 +1260,8 @@ impl ProxyProvider {
             return Err("`dialer-proxy` points to the node itself".to_string());
         }
 
-        let target = meow_proxy::dialer::DialerTarget::new(dialer_name, &self.dialer_registry);
+        let target = meow_proxy::dialer::DialerTarget::new(dialer_name, &self.dialer_registry)
+            .with_provider_nodes(&self.slot);
         let chained: Arc<dyn meow_proxy::dialer::TcpDialer> =
             Arc::new(meow_proxy::dialer::NamedProxyDialer::new(target.clone()).owned_by(raw_name));
         let proxy = match proxy_parser::parse_proxy_provider_node(
@@ -2336,6 +2337,118 @@ header:
         assert_eq!(dial.dst_ip, Some("127.0.0.1".parse().unwrap()));
         assert_eq!(dial.dst_port, 1);
         assert_eq!(dial.conn_type, meow_common::ConnType::Inner);
+    }
+
+    /// A forward reference stays scoped to the provider's live node set,
+    /// including when a group hides the front hop from its selectable view.
+    #[tokio::test]
+    async fn provider_sibling_dialer_survives_refresh_and_group_filter() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::{timeout, Duration};
+
+        timeout(Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    for expected in ["127.0.0.1:1", "example.com:443"] {
+                        let mut header = Vec::new();
+                        while !header.ends_with(b"\r\n\r\n") {
+                            header.push(stream.read_u8().await.unwrap());
+                            assert!(header.len() < 4096);
+                        }
+                        assert!(header.starts_with(format!("CONNECT {expected} HTTP/1.1\r\n").as_bytes()));
+                        stream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await.unwrap();
+                    }
+                    let mut payload = [0; 4];
+                    stream.read_exact(&mut payload).await.unwrap();
+                    assert_eq!(&payload, b"ping");
+                    stream.write_all(b"pong").await.unwrap();
+                }
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("nodes.yaml");
+            std::fs::write(&path, format!(
+                "proxies:\n  - {{name: inner, type: http, server: 127.0.0.1, port: 1, dialer-proxy: outer}}\n  - {{name: outer, type: http, server: 127.0.0.1, port: {port}}}\n"
+            )).unwrap();
+            let registry = ProxyRegistry::default();
+            let provider = ProxyProvider::new("test", &raw_file_provider("nodes.yaml"), Some(dir.path()), true, true, registry.clone()).unwrap();
+            provider.refresh().await.unwrap();
+            let visible = provider.derived_slot(&group_filter(None, Some("^outer$"), None));
+            assert_eq!(slot_names(&visible), ["inner"]);
+            let inner = Arc::clone(&visible.read()[0]);
+            let metadata = meow_common::Metadata {
+                host: "example.com".into(), dst_port: 443, ..Default::default()
+            };
+            for round in 0..2 {
+                if round == 1 {
+                    // A rejected refresh must not partially replace the namespace.
+                    std::fs::write(&path, "proxies: [broken").unwrap();
+                    assert!(provider.refresh().await.is_err());
+                }
+                let mut conn = inner.dial_tcp(&metadata).await.expect("provider sibling must resolve");
+                conn.write_all(b"ping").await.unwrap();
+                conn.flush().await.unwrap();
+                let mut response = [0; 4];
+                conn.read_exact(&mut response).await.unwrap();
+                assert_eq!(&response, b"pong");
+            }
+            server.await.unwrap();
+            // A removed sibling must disappear for retained adapters too.
+            std::fs::write(&path, format!(
+                "proxies:\n  - {{name: inner, type: http, server: 127.0.0.1, port: {port}, dialer-proxy: outer}}\n"
+            )).unwrap();
+            provider.refresh().await.unwrap();
+            let err = inner.dial_tcp(&metadata).await.err().expect("removed sibling must fail closed");
+            assert!(err.to_string().contains("not in the proxy registry"), "{err}");
+            assert!(registry.resolve_name("outer").is_none(), "siblings must not enter the global registry");
+        }).await.expect("provider sibling round-trip timed out");
+    }
+
+    #[tokio::test]
+    async fn provider_sibling_dialer_cycle_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("nodes.yaml"),
+            "proxies:\n  - {name: a, type: http, server: 127.0.0.1, port: 1, dialer-proxy: b}\n  - {name: b, type: http, server: 127.0.0.1, port: 1, dialer-proxy: a}\n"
+        ).unwrap();
+        let provider = ProxyProvider::new(
+            "cycle",
+            &raw_file_provider("nodes.yaml"),
+            Some(dir.path()),
+            true,
+            false,
+            ProxyRegistry::default(),
+        )
+        .unwrap();
+        provider.refresh().await.unwrap();
+        let node = Arc::clone(&provider.proxies()[0]);
+        let metadata = meow_common::Metadata {
+            host: "example.com".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+        let err = tokio::time::timeout(std::time::Duration::from_secs(1), node.dial_tcp(&metadata))
+            .await
+            .expect("a sibling cycle must not hang")
+            .err()
+            .expect("a sibling cycle must fail");
+        assert!(err.to_string().contains("chain exceeds"), "{err}");
+        let weak_slot = Arc::downgrade(&provider.slot);
+        drop(provider);
+        assert!(
+            weak_slot.upgrade().is_none(),
+            "retained nodes must not leak the provider slot"
+        );
+        let err = node
+            .dial_tcp(&metadata)
+            .await
+            .err()
+            .expect("a removed provider must fail closed");
+        assert!(
+            err.to_string().contains("registry generation dropped"),
+            "{err}"
+        );
     }
 
     /// Malformed or self-referencing `dialer-proxy` values reject the node

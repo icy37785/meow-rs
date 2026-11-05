@@ -65,3 +65,46 @@ These cover config-to-wire behavior, malformed options, default TLS,
 plaintext TCP, relay-supplied streams, UDP multi-destination framing, and the
 plaintext mux handshake. The mux test verifies the wire prefix and stream
 opening; it is not a full remote mux interoperability test.
+
+## Provider-local `dialer-proxy` references
+
+Provider nodes can reference siblings in the same provider. This supports a
+subscription that contains both an inner Trojan node and its outer
+Shadowsocks dependency without copying the dependency into top-level
+`proxies:`. This is an additive fork extension, not a mihomo parity claim.
+
+Resolution uses the existing global namespace first (top-level proxies and
+groups), then the referencing node's own provider slot. A remote provider
+cannot shadow an operator-defined global hop or resolve another provider's
+private node names. Existing provider-level and `override.dialer-proxy`
+precedence remains unchanged. This applies to node chaining; the provider's
+HTTP fetch `proxy:` setting continues to use the global namespace.
+
+The full provider slot supplies sibling lookup. A **group's** `filter` or
+`exclude-filter` can hide an outer dependency from the selectable list while
+keeping it available to inner nodes. A **provider's** own filters remove
+nodes from that slot, so they must retain dependencies needed by the chain.
+
+Successful refreshes atomically replace the slot used for sibling lookup;
+retained nodes resolve the current sibling, including its updated endpoint.
+Failed refreshes retain the last-good slot. Removed or missing hops fail
+closed rather than dialing directly (ADR-0002's Class A security boundary).
+Cycles are bounded by the existing chain-depth guard (mux session cycles
+remain bounded by their existing setup timeout).
+
+The lookup holds the provider slot weakly and reads the existing node set;
+it does not maintain a second registry or introduce a provider ownership
+cycle. Siblings are never promoted into the global registry. Lookup scans
+the slot once per unresolved global hop, not per packet.
+
+Regression checks:
+
+```sh
+cargo test -p meow-config --lib provider_sibling
+cargo test -p meow-proxy --lib provider_target
+```
+
+These exercise a forward reference through an actual CONNECT chain,
+group filtering, failed refresh preservation, removal of a referenced
+sibling, provider isolation, global precedence, live slot replacement,
+cycle rejection, and weak ownership.
