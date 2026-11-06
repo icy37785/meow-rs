@@ -1,0 +1,26 @@
+name: Fork Build
+
+on:
+  push:
+    branches: [fork/main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "website/**"
+      - "LICENSE"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'icy37785/meow-rs' && github.ref == 'refs/heads/fork/main'
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: fork-${{ github.sha }}
+      version_suffix: -fork+${{ github.sha }}

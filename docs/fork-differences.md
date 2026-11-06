@@ -147,3 +147,41 @@ cargo test -p meow-config --lib hidden
 cargo test -p meow-config --lib provider_sibling
 cargo test -p meow-api --test api_test hidden_nodes_keep_named_access
 ```
+
+## Fork maintenance, CI, builds and updates
+
+- `upstream` points at `meow-rs/meow-rs`; `origin` points at `icy37785/meow-rs`.
+- `main` is a pure upstream mirror. The default branch and maintained product
+  branch are `fork/main`. Merge upstream into this published branch; do not
+  rebase published fork commits.
+- `fork-ci.yml` runs only for pushes to `fork/main`, PRs targeting it, or a
+  manual dispatch on that branch. Its jobs also enforce the repository/ref.
+- `fork-build.yml` builds only `fork/main`, on push or manual dispatch. It
+  calls the existing reusable `build.yml`; archives and `meow -v` include a
+  `fork` marker and the source SHA. This workflow uploads Actions artifacts;
+  it does not create upstream-style releases or publish crates.
+- The original upstream workflow IDs are disabled in this GitHub fork's
+  Actions settings. Keeping separate fork workflow paths prevents a push of
+  pure upstream `main` from spending minutes on its original CI/build jobs.
+  Keep this setting when synchronizing upstream. The reusable `build.yml`
+  remains enabled, but has no direct event trigger and enforces `fork/main`.
+- Only `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` and
+  `x86_64-unknown-linux-musl` release entries are active. Other entries,
+  OpenWrt packaging and the aarch64-musl CI size job are kept commented for
+  later restoration. Native test builds remain part of validation, not
+  additional published platform artifacts.
+- No scheduled upstream benchmarks, coverage/powerset jobs, Pages deployment,
+  upstream tag release or crates.io publishing is enabled in this fork.
+
+There is no kernel binary self-update command or `/upgrade` REST endpoint
+(the compatibility matrix in `docs/mihomo-api-compatibility.md` documents
+this). Subscription/provider refresh and geodata auto-update are data updates,
+not kernel installation; their configured URLs retain their original meaning.
+No data source is redirected to the code fork.
+
+To update the kernel, download the matching archive and checksum from a
+successful **Fork Build** run in `icy37785/meow-rs`, verify its SHA-256, stop
+the existing process/service, replace the binary and restart. Preserve the
+config and data directory. Windows archives also contain the needed Wintun
+files; desktop archives contain `meow-cli`. Replacing with an upstream binary
+would lose plaintext Trojan, provider-local references and hidden nodes.

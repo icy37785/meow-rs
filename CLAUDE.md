@@ -269,10 +269,10 @@ release with `bash scripts/fetch-v2ray-plugin.sh /tmp/meow-v2rp` and export
 `PATH`); `MEOW_V2RAY_PLUGIN_E2E_ALLOW_SKIP=1` prints a loud explicit skip
 for local runs only — CI fetches it the same way and never sets it.
 
-Keep the target list in sync with `.github/workflows/test.yml`; a new `tests/`
+Keep the target list in sync with `.github/workflows/fork-ci.yml`; a new `tests/`
 file that CI runs but this list omits is invisible to the local bar.
 
-The three-way clippy check (default / no-default-features / all-features) is enforced in CI via `.github/workflows/test.yml` (added in M1, per ADR-0010 §3).
+The three-way clippy check (default / no-default-features / all-features) is enforced in CI via `.github/workflows/fork-ci.yml` (added in M1, per ADR-0010 §3).
 
 M1 exit integration gates (run before closing M1):
 ```bash

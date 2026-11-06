@@ -57,10 +57,10 @@ export default defineConfig({
       {
         text: 'Links',
         items: [
-          { text: 'GitHub', link: 'https://github.com/meow-rs/meow-rs' },
+          { text: 'GitHub', link: 'https://github.com/icy37785/meow-rs' },
           {
-            text: 'Releases',
-            link: 'https://github.com/meow-rs/meow-rs/releases/latest',
+            text: 'Fork builds',
+            link: 'https://github.com/icy37785/meow-rs/actions/workflows/fork-build.yml',
           },
           {
             text: 'mihomo (upstream)',
@@ -107,11 +107,11 @@ export default defineConfig({
       },
     ],
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/meow-rs/meow-rs' },
+      { icon: 'github', link: 'https://github.com/icy37785/meow-rs' },
     ],
     editLink: {
       pattern:
-        'https://github.com/meow-rs/meow-rs/edit/main/website/:path',
+        'https://github.com/icy37785/meow-rs/edit/fork/main/website/:path',
       text: 'Edit this page on GitHub',
     },
     search: { provider: 'local' },

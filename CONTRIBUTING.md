@@ -57,7 +57,7 @@ When adding a new feature, proxy type, rule type, or config option:
 
 ## Every PR must pass the full test bar
 
-CI runs the checks in `.github/workflows/test.yml`. Run the same set locally
+CI runs the checks in `.github/workflows/fork-ci.yml`. Run the same set locally
 before pushing; a PR that is red on any of them will not be reviewed until it
 is green.
 
@@ -93,7 +93,7 @@ Notes:
   of the README for the commands.
 - Add tests for new behaviour. A feature or bug fix without a test that fails
   before the change and passes after it is unlikely to be merged.
-- Keep the target list in `CLAUDE.md` in sync with `test.yml` when you add a
+- Keep the target list in `CLAUDE.md` in sync with `fork-ci.yml` when you add a
   new `tests/` file.
 
 ## Follow the ADRs

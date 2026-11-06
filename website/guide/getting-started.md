@@ -13,7 +13,7 @@ This page takes you from a fresh clone to a running proxy with a live dashboard.
 ## Build
 
 ```bash
-git clone https://github.com/meow-rs/meow-rs.git
+git clone --branch fork/main https://github.com/icy37785/meow-rs.git
 cd meow-rs
 cargo build --release
 ```
@@ -21,21 +21,19 @@ cargo build --release
 The binary lands at `./target/release/meow`. It is a single static-ish executable of
 roughly 6 MiB; you can copy it to any matching host and run it directly.
 
-::: tip Prebuilt binaries
-If you don't want to compile, grab a build from the
-[releases page](https://github.com/meow-rs/meow-rs/releases/latest). Builds are published
-for Linux (x86_64/aarch64 gnu+musl, armv7 gnu+musl, riscv64 musl), macOS
-(x86_64/aarch64), and Windows MSVC (x86_64/aarch64/i686). Every binary
-ships with the default feature set (`full` + `boring-tls`).
+::: tip Fork binaries and updates
+Download the artifacts of a successful
+[Fork Build run](https://github.com/icy37785/meow-rs/actions/workflows/fork-build.yml).
+The active targets are Apple Silicon macOS (`aarch64-apple-darwin`),
+Windows x86_64 MSVC and Linux x86_64 musl. Builds use the `full` feature set;
+archive names and `meow -v` identify the fork and source commit.
 :::
 
-::: warning Alpha builds (unstable)
-Every push to `main` also refreshes a rolling
-[`Prerelease-Alpha`](https://github.com/madeye/meow-rs/releases/tag/Prerelease-Alpha)
-prerelease with the same targets (and OpenWrt `.ipk`s). It is untested,
-may be broken, and is replaced on each push, so don't rely on it for anything
-important. `meow -v` shows `<version>-alpha+<sha>` for these builds.
-:::
+There is no kernel binary self-updater or `/upgrade` API. Verify the downloaded
+archive's SHA-256, stop the service, replace the binary and restart, preserving
+your config and data directory. Use fork artifacts: upstream releases do not
+include this fork's subscription/chaining extensions. Subscription and geodata
+refresh update data only and do not install a new kernel.
 
 ## Configure
 

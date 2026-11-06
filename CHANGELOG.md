@@ -10,6 +10,11 @@ the canonical, in-repo source a release is cut from.
 
 ### Added
 
+- **Fork-only CI and builds**: dedicated `fork/main` workflows build Apple
+  Silicon macOS, Windows x86_64 MSVC and Linux x86_64 musl artifacts marked
+  with the fork source SHA. Other targets and OpenWrt packaging are paused.
+  Download and manual-update instructions now point to the maintained fork.
+
 - **Hidden dependency nodes**: node-level `hidden: true` keeps a proxy
   available for explicit/chained dials while excluding it from automatic
   group membership, CLI proxy lists, scheduled health checks and bulk

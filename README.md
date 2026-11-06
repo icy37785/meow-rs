@@ -4,6 +4,12 @@
 
 # meow-rs
 
+> **Maintained fork:** use [`icy37785/meow-rs`, branch `fork/main`](https://github.com/icy37785/meow-rs/tree/fork/main).
+> Download fork binaries from successful [Fork Build runs](https://github.com/icy37785/meow-rs/actions/workflows/fork-build.yml).
+> Supported artifacts: Apple Silicon macOS, Windows x86_64 MSVC, and Linux x86_64 musl.
+> Upstream releases do not contain the [fork extensions](docs/fork-differences.md).
+> The kernel has no binary self-updater; update by replacing it with the matching fork artifact.
+
 A high-performance Rust implementation of the [mihomo](https://github.com/MetaCubeX/mihomo) (Clash Meta) proxy kernel. Rule-based tunneling with support for multiple proxy protocols, transparent proxy, DNS snooping, a persistent logbook, a REST API, and a built-in web dashboard.
 
 Beyond mihomo, meow keeps [`dialer-proxy` chains](#dialer-proxy-chains) working when a member of the dialer group can pass its URL test but not reach the chained server, and keeps a [logbook](#logbook) of what the engine did (reloads, provider failures, crashes, chained nodes going down) that survives restarts.
@@ -384,20 +390,17 @@ tail -f ~/Library/Logs/meow/meow.log
 ./target/release/meow uninstall
 ```
 
-**OpenWrt (opkg / apk + LuCI):**
+**Fork binaries and updates:** download the artifacts from a successful
+[Fork Build run](https://github.com/icy37785/meow-rs/actions/workflows/fork-build.yml).
+Only `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` and
+`x86_64-unknown-linux-musl` are built. Archives include the source SHA and
+SHA-256 checksum. There is no binary self-updater: stop the service, replace
+the binary with the matching fork build, and restart. See
+[the fork maintenance notes](docs/fork-differences.md#fork-maintenance-ci-builds-and-updates).
 
-Official `.ipk` (opkg) and `.apk` (OpenWrt 25.12+) packages for aarch64 routers — including a
-`luci-app-meow` that embeds the built-in web panel in LuCI — are attached
-to every [release](https://github.com/meow-rs/meow-rs/releases). See
-[docs/openwrt.md](docs/openwrt.md).
-
-**Alpha builds (unstable):** every push to `main` refreshes the rolling
-[`Prerelease-Alpha`](https://github.com/madeye/meow-rs/releases/tag/Prerelease-Alpha)
-prerelease with binaries for all release targets plus OpenWrt `.ipk`s
-(`meow-alpha-<sha7>-<target>.*`), so you can try current `main` without
-compiling. These builds are untested and may break; `meow -v` reports
-`<version>-alpha+<sha7>`. Use the latest stable release for anything
-important.
+OpenWrt packaging and the upstream rolling Alpha release are disabled in
+this fork. The original target/package settings remain commented in the
+build workflow for restoration when needed.
 
 ### Open the Web UI
 

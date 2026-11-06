@@ -44,6 +44,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
+    if: github.repository == 'icy37785/meow-rs' && github.ref == 'refs/heads/fork/main'
     runs-on: ${{ matrix.runner }}
     env:
       # Read by crates/meow-app/build.rs; empty for tagged releases.
@@ -74,8 +75,14 @@ jobs:
           # container hits the same time64-vs-libc disagreement; the script
           # bridges it with a one-line cast in `boring`. Such targets carry
           # `toolchain:` and skip the zig steps below.
+          # Fork release scope: only the three active entries below.
+          # Uncomment a complete target block to restore it.
           # Linux musl
           - target: x86_64-unknown-linux-musl
+            toolchain: ''
+            toolchain_script: ''
+            qemu: ''
+            openwrt_archs: ''
             runner: ubuntu-latest
             desktop: true
             # x86_64: informational only, no size gate
@@ -83,93 +90,102 @@ jobs:
             minimal_soft_gate: true
             # OpenWrt x86/64 (VMs, mini-PCs) uses the plain `x86_64` label
             # (#725).
-            openwrt_archs: x86_64
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-latest
-            desktop: true
-            # aarch64: hard gate — release fails if minimal binary exceeds 8 MiB.
-            # test.yml's `size` job reads this entry's budget and gate class
-            # to run the same check on pull requests.
-            minimal_budget_bytes: 8388608
-            minimal_soft_gate: false
-            # Static musl binary → one build serves several OpenWrt arch
-            # labels; the .ipk/.apk differ only in the architecture field
-            # (#284, #466).
-            openwrt_archs: >-
-              aarch64_generic aarch64_cortex-a53 aarch64_cortex-a72
-              aarch64_cortex-a76
-          # Linux GNU
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            desktop: true
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-          - target: armv7-unknown-linux-gnueabihf
-            runner: ubuntu-latest
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-          # Static musl for 32-bit ARM routers (MikroTik hEX/ARM, older
-          # OpenWrt devices). The gnu build above is dynamically linked and
-          # needs GLIBC_2.28, which Alpine's armhf gcompat does not provide,
-          # so `execve` fails with ENOENT on a file that exists; this one has
-          # neither dependency. No OpenWrt arch labels yet — the maintainers
-          # pick the CPU baselines (arm_cortex-a7_neon-vfp4 and friends), see
-          # ADR-0007 for the armv7-musl status.
-          - target: armv7-unknown-linux-musleabihf
-            runner: ubuntu-latest
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-            openwrt_archs: ''
-            # Suffix is the RUNNER's architecture, not the target's
-            # (ubuntu-latest is x86_64 today). ghcr mirror, not Docker Hub:
-            # anonymous Hub pulls are rate-limited and this image is the
-            # entire compile chain for this leg.
-            # tag@sha256 pins that compile chain: a retagged or hijacked
-            # image would otherwise silently change the released binary.
-            # Nothing auto-bumps this (no renovate/dependabot here) — to
-            # update, resolve the tag's digest with
-            # `docker buildx imagetools inspect <tag>` and re-run the leg
-            # on a branch first.
-            toolchain: ghcr.io/rust-cross/rust-musl-cross:armv7-musleabihf-amd64@sha256:c2603200841eac1a6681d7beef44816c9954b0f59952ae7ae96652788287e16f
-            # Every `toolchain:` leg names its in-container build script
-            # here — the container step fails fast on a leg that forgets,
-            # instead of building the wrong target for 15 min.
-            toolchain_script: scripts/build-armv7-musl.sh
-            # qemu-user binary used to smoke-run the produced binary on the
-            # runner (see the QEMU step below); empty = no smoke.
-            qemu: qemu-arm
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            desktop: true
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-          - target: riscv64gc-unknown-linux-musl
-            runner: ubuntu-latest
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-          # Windows
+          #   openwrt_archs: x86_64
+          # OpenWrt packaging is paused along with unused targets.
+          # - target: aarch64-unknown-linux-musl
+          #   runner: ubuntu-latest
+          #   desktop: true
+          #   # aarch64: hard gate — release fails if minimal binary exceeds 8 MiB.
+          #   # test.yml's `size` job reads this entry's budget and gate class
+          #   # to run the same check on pull requests.
+          #   minimal_budget_bytes: 8388608
+          #   minimal_soft_gate: false
+          #   # Static musl binary → one build serves several OpenWrt arch
+          #   # labels; the .ipk/.apk differ only in the architecture field
+          #   # (#284, #466).
+          #   openwrt_archs: >-
+          #     aarch64_generic aarch64_cortex-a53 aarch64_cortex-a72
+          #     aarch64_cortex-a76
+          # # Linux GNU
+          # - target: aarch64-unknown-linux-gnu
+          #   runner: ubuntu-latest
+          #   desktop: true
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          # - target: armv7-unknown-linux-gnueabihf
+          #   runner: ubuntu-latest
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          # # Static musl for 32-bit ARM routers (MikroTik hEX/ARM, older
+          # # OpenWrt devices). The gnu build above is dynamically linked and
+          # # needs GLIBC_2.28, which Alpine's armhf gcompat does not provide,
+          # # so `execve` fails with ENOENT on a file that exists; this one has
+          # # neither dependency. No OpenWrt arch labels yet — the maintainers
+          # # pick the CPU baselines (arm_cortex-a7_neon-vfp4 and friends), see
+          # # ADR-0007 for the armv7-musl status.
+          # - target: armv7-unknown-linux-musleabihf
+          #   runner: ubuntu-latest
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          #   openwrt_archs: ''
+          #   # Suffix is the RUNNER's architecture, not the target's
+          #   # (ubuntu-latest is x86_64 today). ghcr mirror, not Docker Hub:
+          #   # anonymous Hub pulls are rate-limited and this image is the
+          #   # entire compile chain for this leg.
+          #   # tag@sha256 pins that compile chain: a retagged or hijacked
+          #   # image would otherwise silently change the released binary.
+          #   # Nothing auto-bumps this (no renovate/dependabot here) — to
+          #   # update, resolve the tag's digest with
+          #   # `docker buildx imagetools inspect <tag>` and re-run the leg
+          #   # on a branch first.
+          #   toolchain: ghcr.io/rust-cross/rust-musl-cross:armv7-musleabihf-amd64@sha256:c2603200841eac1a6681d7beef44816c9954b0f59952ae7ae96652788287e16f
+          #   # Every `toolchain:` leg names its in-container build script
+          #   # here — the container step fails fast on a leg that forgets,
+          #   # instead of building the wrong target for 15 min.
+          #   toolchain_script: scripts/build-armv7-musl.sh
+          #   # qemu-user binary used to smoke-run the produced binary on the
+          #   # runner (see the QEMU step below); empty = no smoke.
+          #   qemu: qemu-arm
+          # - target: x86_64-unknown-linux-gnu
+          #   runner: ubuntu-latest
+          #   desktop: true
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          # - target: riscv64gc-unknown-linux-musl
+          #   runner: ubuntu-latest
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          # # Windows
           - target: x86_64-pc-windows-msvc
+            toolchain: ''
+            toolchain_script: ''
+            qemu: ''
+            openwrt_archs: ''
             runner: windows-latest
             desktop: true
             minimal_budget_bytes: 0
             minimal_soft_gate: true
-          - target: aarch64-pc-windows-msvc
-            runner: windows-latest
-            desktop: true
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-          - target: i686-pc-windows-msvc
-            runner: windows-latest
-            desktop: true
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
-          # macOS
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-            desktop: true
-            minimal_budget_bytes: 0
-            minimal_soft_gate: true
+          # - target: aarch64-pc-windows-msvc
+          #   runner: windows-latest
+          #   desktop: true
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          # - target: i686-pc-windows-msvc
+          #   runner: windows-latest
+          #   desktop: true
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
+          # # macOS
+          # - target: x86_64-apple-darwin
+          #   runner: macos-latest
+          #   desktop: true
+          #   minimal_budget_bytes: 0
+          #   minimal_soft_gate: true
           - target: aarch64-apple-darwin
+            toolchain: ''
+            toolchain_script: ''
+            qemu: ''
+            openwrt_archs: ''
             runner: macos-latest
             desktop: true
             minimal_budget_bytes: 0
